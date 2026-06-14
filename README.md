@@ -44,6 +44,7 @@ Hello from WatchingYou-server
 
 This example deploys the repository to `/opt/WatchingYou-server`. Keep the deployed app and virtualenv owned by `root`; the systemd unit runs as `www-data`, so the files only need to be readable and executable by `www-data`. This first server does not require a writable data directory.
 
+Executing below commands at the root dir of this repo
 ```bash
 sudo mkdir -p /opt/WatchingYou-server
 sudo rsync -a --delete ./ /opt/WatchingYou-server/
