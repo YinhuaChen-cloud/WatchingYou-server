@@ -5,7 +5,8 @@ FastAPI server that proxies chat messages from WatchingYou-Android-APP to the De
 ## Behavior
 
 - `GET /health` — returns `Hello from WatchingYou-server` (used by the Android client to verify connectivity)
-- `POST /chat` — forwards the plain-text message body to DeepSeek and returns the AI reply as plain text; maintains a single global in-memory conversation history (cleared on restart)
+- `POST /chat` — forwards the plain-text message body to DeepSeek and returns the AI reply as plain text; maintains a single global in-memory conversation history (cleared on restart). The server is configured with a "学习工作监督员" (study/work supervisor) persona that uses a snarky tone to keep users focused on productive tasks.
+- `POST /chat` with body `/restart` — resets the conversation history to its initial state (keeps only the supervisor persona), returning "对话已重置。" without calling the DeepSeek API
 
 ## Configuration
 
@@ -41,9 +42,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```bash
 curl http://127.0.0.1:8000/health
 curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: text/plain" -d "你好"
+curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: text/plain" -d "/restart"
 ```
 
-`/health` prints `Hello from WatchingYou-server`. `/chat` prints the DeepSeek reply.
+`/health` prints `Hello from WatchingYou-server`. `/chat` prints the DeepSeek reply (with supervisor persona). `/restart` resets the conversation history.
 
 ## Install as a systemd service
 

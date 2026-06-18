@@ -24,6 +24,10 @@ async def chat(request: Request) -> Response:
     if not body:
         return Response(content="message body is required", status_code=400, media_type="text/plain")
 
+    if body == "/restart":
+        deepseek.reset_history()
+        return Response(content="对话已重置。", media_type="text/plain")
+
     try:
         reply = await run_in_threadpool(deepseek.chat, body, api_key=_api_key)
         return Response(content=reply, media_type="text/plain")

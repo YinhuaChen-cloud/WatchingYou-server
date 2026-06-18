@@ -52,3 +52,22 @@ def test_chat_network_error_returns_502(client):
         response = client.post("/chat", content="Hi", headers={"Content-Type": "text/plain"})
 
     assert response.status_code == 502
+
+
+def test_restart_returns_200_and_resets_history(client):
+    with patch("app.main.deepseek.reset_history") as mock_reset:
+        response = client.post("/chat", content="/restart", headers={"Content-Type": "text/plain"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == "对话已重置。"
+    mock_reset.assert_called_once()
+
+
+def test_restart_with_whitespace_works(client):
+    with patch("app.main.deepseek.reset_history") as mock_reset:
+        response = client.post("/chat", content="  /restart  ", headers={"Content-Type": "text/plain"})
+
+    assert response.status_code == 200
+    assert response.text == "对话已重置。"
+    mock_reset.assert_called_once()
