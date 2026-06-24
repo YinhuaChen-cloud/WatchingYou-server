@@ -1,7 +1,7 @@
 import httpx
 
 _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-_MODEL = "deepseek-chat"
+_MODEL = "deepseek-v4-pro"
 
 _SYSTEM_PROMPT = {
     "role": "system",

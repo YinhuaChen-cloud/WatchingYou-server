@@ -11,7 +11,7 @@ AUTO_MESSAGE_CONTENT = "每隔6min自动发送消息"
 POLL_DEFAULT_TIMEOUT_SECONDS = 30
 POLL_MIN_TIMEOUT_SECONDS = 1
 POLL_MAX_TIMEOUT_SECONDS = 60
-MAX_QUEUE_SIZE = 20
+MAX_QUEUE_SIZE = 1000
 
 
 # --- Helpers ---
@@ -70,17 +70,13 @@ class ProactiveMessageBroker:
     ) -> Optional[ProactiveMessage]:
         timeout = clamp_poll_timeout(timeout_seconds)
         async with self._condition:
-            if self._queue:
-                return self._queue.popleft()
-
-            try:
-                await asyncio.wait_for(
-                    self._condition.wait(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                return None
-
-            # After being notified, check again
+            while not self._queue:
+                try:
+                    await asyncio.wait_for(
+                        self._condition.wait(), timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    return None
             if self._queue:
                 return self._queue.popleft()
             return None

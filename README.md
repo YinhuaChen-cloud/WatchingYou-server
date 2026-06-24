@@ -25,8 +25,11 @@ The server will refuse to start if `config.yaml` is missing or the key has not b
 ```bash
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip curl rsync
+# 创建 Python 虚拟环境，隔离项目依赖，避免污染系统 Python 环境
 python3 -m venv .venv
+# 激活虚拟环境，之后 pip 安装的包都会隔离在 .venv 内
 . .venv/bin/activate
+# 安装项目所需的 Python 依赖包
 pip install -r requirements.txt
 ```
 
@@ -35,6 +38,8 @@ pip install -r requirements.txt
 ```bash
 # see Configuration section above to set up config.yaml
 . .venv/bin/activate
+# uvicorn 是 ASGI 服务器，用来运行 FastAPI 应用
+# app.main:app 表示从 app/main.py 中导入名为 app 的 FastAPI 实例并启动
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
