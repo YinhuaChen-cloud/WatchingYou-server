@@ -4,6 +4,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from app.deepseek import ReminderParseResult
+
 
 @pytest.fixture
 def client():
@@ -11,7 +13,8 @@ def client():
         import importlib
         import app.main
         importlib.reload(app.main)
-        return TestClient(app.main.app)
+        with TestClient(app.main.app) as test_client:
+            yield test_client
 
 
 def test_health_returns_plain_text_greeting(client):
@@ -23,12 +26,70 @@ def test_health_returns_plain_text_greeting(client):
 
 
 def test_chat_returns_ai_reply(client):
-    with patch("app.main.deepseek.chat", return_value="Hello from DeepSeek"):
-        response = client.post("/chat", content="Hi", headers={"Content-Type": "text/plain"})
+    with patch(
+        "app.main.deepseek.parse_reminder_request",
+        return_value=ReminderParseResult(raw_reply='{"is_reminder": false}', data={"is_reminder": False}),
+    ):
+        with patch("app.main.deepseek.chat", return_value="Hello from DeepSeek"):
+            response = client.post("/chat", content="Hi", headers={"Content-Type": "text/plain"})
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
     assert response.text == "Hello from DeepSeek"
+
+
+def test_chat_reminder_returns_confirmation_and_schedules(client):
+    parse_result = ReminderParseResult(
+        raw_reply='{"is_reminder": true}',
+        data={
+            "is_reminder": True,
+            "remind_at": "2999-01-01T00:00:00+00:00",
+            "task": "开会",
+            "confirmation": "行，到点我叫你。",
+        },
+    )
+
+    with patch("app.main.deepseek.parse_reminder_request", return_value=parse_result):
+        with patch.object(client.app.state.reminder_scheduler, "schedule", return_value=True) as mock_schedule:
+            response = client.post("/chat", content="提醒我开会", headers={"Content-Type": "text/plain"})
+
+    assert response.status_code == 200
+    assert response.text == "行，到点我叫你。"
+    scheduled = mock_schedule.call_args.args[0]
+    assert scheduled.task == "开会"
+    assert scheduled.confirmation == "行，到点我叫你。"
+
+
+def test_chat_parse_failure_returns_raw_reply_and_does_not_schedule(client):
+    parse_result = ReminderParseResult(raw_reply="这是原始回复", data=None)
+
+    with patch("app.main.deepseek.parse_reminder_request", return_value=parse_result):
+        with patch.object(client.app.state.reminder_scheduler, "schedule") as mock_schedule:
+            response = client.post("/chat", content="你好", headers={"Content-Type": "text/plain"})
+
+    assert response.status_code == 200
+    assert response.text == "这是原始回复"
+    mock_schedule.assert_not_called()
+
+
+def test_chat_invalid_reminder_time_returns_raw_reply(client):
+    parse_result = ReminderParseResult(
+        raw_reply="提醒时间无效",
+        data={
+            "is_reminder": True,
+            "remind_at": "not-a-time",
+            "task": "开会",
+            "confirmation": "行",
+        },
+    )
+
+    with patch("app.main.deepseek.parse_reminder_request", return_value=parse_result):
+        with patch.object(client.app.state.reminder_scheduler, "schedule") as mock_schedule:
+            response = client.post("/chat", content="提醒我开会", headers={"Content-Type": "text/plain"})
+
+    assert response.status_code == 200
+    assert response.text == "提醒时间无效"
+    mock_schedule.assert_not_called()
 
 
 def test_chat_empty_body_returns_400(client):
@@ -41,16 +102,24 @@ def test_chat_deepseek_http_error_returns_502(client):
     mock_response = httpx.Response(500, text="Internal Server Error")
     error = httpx.HTTPStatusError("500", request=httpx.Request("POST", "http://x"), response=mock_response)
 
-    with patch("app.main.deepseek.chat", side_effect=error):
-        response = client.post("/chat", content="Hi", headers={"Content-Type": "text/plain"})
+    with patch(
+        "app.main.deepseek.parse_reminder_request",
+        return_value=ReminderParseResult(raw_reply='{"is_reminder": false}', data={"is_reminder": False}),
+    ):
+        with patch("app.main.deepseek.chat", side_effect=error):
+            response = client.post("/chat", content="Hi", headers={"Content-Type": "text/plain"})
 
     assert response.status_code == 502
     assert "500" in response.text
 
 
 def test_chat_network_error_returns_502(client):
-    with patch("app.main.deepseek.chat", side_effect=Exception("connection refused")):
-        response = client.post("/chat", content="Hi", headers={"Content-Type": "text/plain"})
+    with patch(
+        "app.main.deepseek.parse_reminder_request",
+        return_value=ReminderParseResult(raw_reply='{"is_reminder": false}', data={"is_reminder": False}),
+    ):
+        with patch("app.main.deepseek.chat", side_effect=Exception("connection refused")):
+            response = client.post("/chat", content="Hi", headers={"Content-Type": "text/plain"})
 
     assert response.status_code == 502
 
@@ -104,7 +173,7 @@ class TestPollEndpoint:
         response = client.get("/poll", params={"timeout_seconds": 1})
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/json")
-        assert response.json() == {"content": "test message", "timestamp": 123456789}
+        assert response.json() == {"content": "test message", "timestamp": 123456789, "type": "ai"}
 
     def test_poll_returns_204_on_timeout(self, client_and_broker):
         client, broker = client_and_broker
@@ -133,7 +202,7 @@ class TestPollEndpoint:
 
         response = client.get("/poll")
         assert response.status_code == 200
-        assert response.json() == {"content": "immediate", "timestamp": 222}
+        assert response.json() == {"content": "immediate", "timestamp": 222, "type": "ai"}
 
     def test_poll_returns_queued_message_immediately(self, client_and_broker):
         """When a message is queued before poll, it returns immediately without waiting."""
@@ -146,7 +215,7 @@ class TestPollEndpoint:
 
         response = client.get("/poll", params={"timeout_seconds": 5})
         assert response.status_code == 200
-        assert response.json() == {"content": "pre-queued", "timestamp": 333}
+        assert response.json() == {"content": "pre-queued", "timestamp": 333, "type": "ai"}
 
 
 # ---------------------------------------------------------------------------
@@ -154,42 +223,18 @@ class TestPollEndpoint:
 # ---------------------------------------------------------------------------
 
 class TestLifespan:
-    def test_lifespan_starts_and_stops_auto_publisher(self):
-        """
-        Verify that the lifespan starts run_auto_publisher on startup
-        and stops it cleanly on shutdown. We monkeypatch run_auto_publisher
-        to track calls without actually running the real auto publisher.
-        """
-        started = False
-        stopped = False
-
-        async def mock_run_auto_publisher(broker, stop_event=None):
-            nonlocal started
-            started = True
-            try:
-                # Block until stop_event is set, simulating the real publisher
-                await stop_event.wait()
-            finally:
-                nonlocal stopped
-                stopped = True
-
+    def test_lifespan_exposes_reminder_scheduler_and_cleans_up(self):
         with patch("app.config.load_config", return_value={"deepseek_api_key": "sk-test"}):
-            # Patch the original function in proactive_messages so that
-            # importlib.reload picks up the mock when re-executing the import.
-            with patch("app.proactive_messages.run_auto_publisher", side_effect=mock_run_auto_publisher):
-                import importlib
-                import app.main as app_main_module
-                importlib.reload(app_main_module)
+            import importlib
+            import app.main as app_main_module
+            importlib.reload(app_main_module)
 
-                # Entering TestClient context runs the lifespan startup
+            with patch.object(app_main_module.deepseek, "generate_reminder_message", return_value="提醒"):
                 with TestClient(app_main_module.app) as test_client:
-                    assert app_main_module._auto_publisher_task is not None
-                    assert started, "auto publisher should have been started"
+                    assert test_client.app.state.reminder_scheduler is not None
+                    assert test_client.app.state.reminder_scheduler.active_count == 0
 
-                # After exiting TestClient, lifespan shutdown should have run
-                assert stopped, "auto publisher should have been stopped"
-                assert app_main_module._auto_publisher_task is None
-                assert app_main_module._auto_publisher_stop is None
+                assert app_main_module.app.state.reminder_scheduler.active_count == 0
 
     def test_existing_routes_unaffected_by_lifespan(self, client):
         """Sanity check that /health still works with lifespan."""

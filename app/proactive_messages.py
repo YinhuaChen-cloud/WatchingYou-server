@@ -36,6 +36,7 @@ def clamp_poll_timeout(timeout_seconds: Optional[float]) -> float:
 class ProactiveMessage:
     content: str
     timestamp: int
+    type: str = "ai"
 
     def to_dict(self) -> dict[str, str | int]:
         return asdict(self)
@@ -55,10 +56,13 @@ class ProactiveMessageBroker:
         self._condition = asyncio.Condition()
 
     async def publish(
-        self, content: str, timestamp_ms: Optional[int] = None
+        self,
+        content: str,
+        timestamp_ms: Optional[int] = None,
+        message_type: str = "ai",
     ) -> None:
         timestamp = timestamp_ms if timestamp_ms is not None else self._now_ms()
-        msg = ProactiveMessage(content=content, timestamp=timestamp)
+        msg = ProactiveMessage(content=content, timestamp=timestamp, type=message_type)
         async with self._condition:
             if len(self._queue) >= self.max_queue_size:
                 self._queue.popleft()  # drop oldest

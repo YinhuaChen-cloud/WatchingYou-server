@@ -51,6 +51,7 @@ class TestProactiveMessage:
         msg = ProactiveMessage(content="hello", timestamp=1234567890)
         assert msg.content == "hello"
         assert msg.timestamp == 1234567890
+        assert msg.type == "ai"
 
     def test_is_frozen(self):
         msg = ProactiveMessage(content="hello", timestamp=123)
@@ -60,7 +61,12 @@ class TestProactiveMessage:
     def test_to_dict(self):
         msg = ProactiveMessage(content="世界", timestamp=999)
         d = msg.to_dict()
-        assert d == {"content": "世界", "timestamp": 999}
+        assert d == {"content": "世界", "timestamp": 999, "type": "ai"}
+
+    def test_to_dict_includes_error_type(self):
+        msg = ProactiveMessage(content="主动消息生成失败", timestamp=999, type="error")
+        d = msg.to_dict()
+        assert d == {"content": "主动消息生成失败", "timestamp": 999, "type": "error"}
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +105,7 @@ class TestConstants:
         assert POLL_DEFAULT_TIMEOUT_SECONDS == 30
         assert POLL_MIN_TIMEOUT_SECONDS == 1
         assert POLL_MAX_TIMEOUT_SECONDS == 60
-        assert MAX_QUEUE_SIZE == 20
+        assert MAX_QUEUE_SIZE == 1000
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +138,18 @@ class TestProactiveMessageBroker:
             await broker.publish("msg")
             result = await broker.poll()
             assert result.timestamp == 42
+            assert result.type == "ai"
+
+        _run(_test())
+
+    def test_publish_accepts_message_type(self):
+        async def _test():
+            broker = ProactiveMessageBroker(now_ms=lambda: 42)
+            await broker.publish("主动消息生成失败", message_type="error")
+            result = await broker.poll()
+            assert result.content == "主动消息生成失败"
+            assert result.timestamp == 42
+            assert result.type == "error"
 
         _run(_test())
 

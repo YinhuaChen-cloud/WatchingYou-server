@@ -7,7 +7,8 @@ FastAPI server that proxies chat messages from WatchingYou-Android-APP to the De
 - `GET /health` — returns `Hello from WatchingYou-server` (used by the Android client to verify connectivity)
 - `POST /chat` — forwards the plain-text message body to DeepSeek and returns the AI reply as plain text; maintains a single global in-memory conversation history (cleared on restart). The server is configured with a "学习工作监督员" (study/work supervisor) persona that uses a snarky tone to keep users focused on productive tasks.
 - `POST /chat` with body `/restart` — resets the conversation history to its initial state (keeps only the supervisor persona), returning "对话已重置。" without calling the DeepSeek API
-- `GET /poll?timeout_seconds=30` — long-polling endpoint for proactive messages. Returns `200 application/json` with `{"content": "...", "timestamp": <unix-epoch-ms>}` when a proactive message is available, or `204 No Content` when the poll times out without a message. `timeout_seconds` is optional (default 30, clamped to 1–60). The server auto-generates `每隔6min自动发送消息` every 6 minutes. This is a foreground-only delivery mechanism; no vivo Push, FCM, or background service is involved in this version.
+- `POST /chat` with a natural-language reminder request such as `哟，2:30 提醒我开会` — asks DeepSeek to parse the reminder, schedules it in memory, and immediately returns a confirmation reply. When the reminder fires, the server asks DeepSeek to generate a reminder message and queues it for `/poll`. Scheduled reminders are lost if the server restarts.
+- `GET /poll?timeout_seconds=30` — long-polling endpoint for proactive messages. Returns `200 application/json` with `{"content": "...", "timestamp": <unix-epoch-ms>, "type": "ai"}` for normal proactive messages, `type: "error"` for red error proactive messages, or `204 No Content` when the poll times out without a message. `timeout_seconds` is optional (default 30, clamped to 1–60). Proactive delivery is foreground-only; no vivo Push, FCM, or background service is involved in this version.
 
 ## Configuration
 
@@ -54,12 +55,9 @@ curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: text/plain" -d "/resta
 `/health` prints `Hello from WatchingYou-server`. `/chat` prints the DeepSeek reply (with supervisor persona). `/restart` resets the conversation history. `/poll` returns `200` with a proactive message JSON object `{"content": "...", "timestamp": <unix-epoch-ms>}` when available, or `204` on timeout.
 
 ```bash
-# Quick poll with a short timeout to see the 204 No Content response quickly
-curl -i 'http://127.0.0.1:8000/poll?timeout_seconds=1'
-# Long-poll for a proactive message (blocks up to 30 s)
-curl http://127.0.0.1:8000/poll
-# Wait 6 minutes, then poll again — should return the auto-generated message
-# Response body: {"content":"每隔6min自动发送消息","timestamp":<unix-epoch-ms>}
+# Queue behavior is now reminder-driven. Start the server, send a near-future reminder,
+# then poll until the reminder message is returned.
+curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: text/plain" -d "1 分钟后提醒我开会"
 curl http://127.0.0.1:8000/poll
 ```
 

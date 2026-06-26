@@ -3,7 +3,6 @@
 # 基于 FastAPI 框架，提供健康检查、聊天对话和主动消息轮询接口
 # =============================================================================
 
-import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -14,7 +13,8 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import load_config
 from app import deepseek
-from app.proactive_messages import ProactiveMessageBroker, run_auto_publisher
+from app.proactive_messages import ProactiveMessageBroker
+from app.reminders import ParsedReminder, ReminderScheduler, parse_remind_at
 
 # 哪怕使用 uvicorn 启动，代码也会从这里往下一行一行执行
 
@@ -28,44 +28,17 @@ _api_key = _config["deepseek_api_key"]
 
 # 创建全局的主动消息代理器实例，用于管理主动推送消息的生产和消费
 proactive_broker = ProactiveMessageBroker()
-# 控制自动发布器停止的异步事件标志（None 表示未初始化，启动后在 lifespan 中赋值）
-# 这是一种类型注解（Type Annotation）语法，具体来说是 Python 3.10+ 引入的
-# **联合类型（Union Type）**的简洁写法。
-# _auto_publisher_stop	变量名（下划线开头表示模块内部使用）
-# : asyncio.Event | None	类型注解：这个变量可以是 asyncio.Event 类型，也可以是 None
-# = None	默认值/初始值为 None
-_auto_publisher_stop: asyncio.Event | None = None
-# 保存自动发布器后台任务的引用（None 表示未启动，用于应用关闭时取消任务）
-_auto_publisher_task: asyncio.Task | None = None
 
-# -----------------------------------------------------------------------
-# lifespan 应用生命周期管理
-# 使用 @asynccontextmanager 定义的异步上下文管理器
-# 在应用启动时自动启动后台任务，应用关闭时优雅地停止它们
-# -----------------------------------------------------------------------
-# 定义应用启动和应用关闭时的行为
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 声明要修改的是模块级的全局变量
-    global _auto_publisher_stop, _auto_publisher_task
-    # 创建一个新的异步事件对象，用于向后台任务发出"停止"信号
-    _auto_publisher_stop = asyncio.Event()
-    # 创建一个后台异步任务，运行自动发布器（定时检查并推送主动消息）
-    # asyncio.create_task 不会阻塞，任务在后台事件循环中并发执行
-    _auto_publisher_task = asyncio.create_task(
-        run_auto_publisher(proactive_broker, stop_event=_auto_publisher_stop)
+    reminder_scheduler = ReminderScheduler(
+        broker=proactive_broker,
+        api_key=_api_key,
+        generate_message=deepseek.generate_reminder_message,
     )
-    # yield 将控制权交给 FastAPI 应用，应用在此处开始接受请求
-    # yield 之前的代码在"启动"时执行，之后的代码在"关闭"时执行
+    app.state.reminder_scheduler = reminder_scheduler
     yield
-    # ----- 以下是应用关闭时的清理逻辑 -----
-    # 设置停止事件标志，通知后台任务停止运行
-    _auto_publisher_stop.set()
-    # 等待后台任务优雅退出（await 确保任务完全结束才继续）
-    await _auto_publisher_task
-    # 清理引用，释放资源
-    _auto_publisher_task = None
-    _auto_publisher_stop = None
+    await reminder_scheduler.shutdown()
 
 
 # 创建 FastAPI 应用实例，绑定生命周期管理函数
@@ -118,11 +91,26 @@ async def chat(request: Request) -> Response:
         return Response(content="对话已重置。", media_type="text/plain")
 
     try:
-        # 在独立线程池中调用 DeepSeek 的同步 chat 函数
-        # 使用 run_in_threadpool 避免阻塞 FastAPI 的异步事件循环
-        # 参数：用户消息体 和 API 密钥
+        parse_result = await run_in_threadpool(deepseek.parse_reminder_request, body, api_key=_api_key)
+        if parse_result.data is None:
+            return Response(content=parse_result.raw_reply, media_type="text/plain")
+
+        if parse_result.data.get("is_reminder"):
+            remind_at = parse_remind_at(str(parse_result.data.get("remind_at", "")))
+            task = parse_result.data.get("task")
+            confirmation = parse_result.data.get("confirmation")
+            if remind_at is None or not isinstance(task, str) or not isinstance(confirmation, str):
+                return Response(content=parse_result.raw_reply, media_type="text/plain")
+
+            reminder = ParsedReminder(
+                remind_at=remind_at,
+                task=task,
+                confirmation=confirmation,
+            )
+            request.app.state.reminder_scheduler.schedule(reminder)
+            return Response(content=confirmation, media_type="text/plain")
+
         reply = await run_in_threadpool(deepseek.chat, body, api_key=_api_key)
-        # 返回 AI 回复内容，纯文本格式
         return Response(content=reply, media_type="text/plain")
     except httpx.HTTPStatusError as e:
         # 捕获 HTTP 状态错误（如 DeepSeek API 返回 4xx/5xx）
